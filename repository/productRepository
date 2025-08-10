@@ -1,0 +1,30 @@
+const Product = require('../models/Product');
+
+const findByProductNameIgnoreCase = async (name) => {
+  return await Product.findOne({ productName: { $regex: new RegExp(`^${name}$`, 'i') } });
+};
+
+const getAllProductsBetweenPriceLimit = async (lower, upper) => {
+  return await Product.find({ price: { $gte: lower, $lte: upper } });
+};
+
+const existsByProductNameIgnoreCase = async (name) => {
+  const product = await Product.findOne({ productName: { $regex: new RegExp(`^${name}$`, 'i') } });
+  return !!product;
+};
+
+const findAllByOrderByPriceAsc = async () => {
+  return await Product.find().sort({ price: 1 });
+};
+
+const findAllByOrderByPriceDesc = async () => {
+  return await Product.find().sort({ price: -1 });
+};
+
+module.exports = {
+  findByProductNameIgnoreCase,
+  getAllProductsBetweenPriceLimit,
+  existsByProductNameIgnoreCase,
+  findAllByOrderByPriceAsc,
+  findAllByOrderByPriceDesc
+};

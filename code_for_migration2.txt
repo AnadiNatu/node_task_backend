@@ -1,0 +1,774 @@
+/* SERVICE */
+1.) AuthService
+@Service
+public class AdminService {
+
+    @Autowired
+    private UserRepository userRepository;
+    @Autowired
+    private ProductRepository productRepository;
+    @Autowired
+    private ProductOrderRepository orderRepository;
+    @Autowired
+    private OrderLogRepository orderLogRepository;
+    @Autowired
+    private AppMapper mapper;
+    @Autowired
+    private JwtUtil jwtUtil;
+
+// Utility functions
+
+    public ProductDTO getProductById(Long id){
+
+        return productRepository.findById(id).map(product ->mapper.toProductDTO(product))
+        .orElseThrow(() -> new RuntimeException("Product by this Id" +id+ "not found"));
+    }
+
+    public ProductDTO getProductByName(String name){
+        return productRepository.findByProductNameIgnoreCase(name).map(product -> mapper.toProductDTO(product)).orElseThrow(() -> new RuntimeException("Product with that name " +name+ "do not exist"));
+    }
+
+    public UserInfoDTO getUserById(Long id){
+        return userRepository.findById(id).map(user -> mapper.toUserInfoDto(user)).orElseThrow(() -> new RuntimeException("User with id was not found" +id));
+    }
+
+    public UserInfoDTO getUserByName(String name){
+        return userRepository.findUsersByNameContaining(name).map(user -> mapper.toUserInfoDto(user)).orElseThrow(() -> new RuntimeException("User that name doesn't exist" + name));
+    }
+
+    public OrderInfoDTO getProductOrderById(Long id){
+        return orderRepository.findById(id).map(order -> mapper.toOrderInfoDTO(order)).orElseThrow(() -> new RuntimeException("Order not found"));
+    }
+
+    public List<OrderInfoDTO> getProductOrderByUser_Id(Long userId){
+        return orderRepository.findByUsers_Id(userId).stream().map(order -> mapper.toOrderInfoDTO(order)).toList();
+    }
+
+    public List<OrderInfoDTO> getProductOrderByProduct_Id(Long productId){
+        return orderRepository.findByProducts_Id(productId).stream().map(order -> mapper.toOrderInfoDTO(order)).toList();
+    }
+
+
+    @Autowired
+    private ImageStorageService imageStorageService;
+
+    public ProductDTO createProduct(CreateProductDTO createProductDTO , MultipartFile imageFile){
+        try {
+            Products product = mapper.fromCreateProductDTO(createProductDTO);
+            Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+            System.out.println("Logged in user: " + auth.getName());
+            System.out.println("Authorities: " + auth.getAuthorities());
+            if (imageFile != null && !imageFile.isEmpty()){
+                String imageUrl = imageStorageService.save(imageFile);
+                product.setImageUrl(imageUrl);
+            }
+            Products savedProduct = productRepository.save(product);
+
+            return mapper.toProductDTO(savedProduct);
+        }catch(Exception ex){
+            throw new RuntimeException("Failed to create product: " + ex.getMessage());
+        }
+    }
+
+
+    public OrderLog createOrderLog(Long userId , Long productId , Long orderId , Date deliveredOn , int productInventory , double totalOrderPrice){
+        Users userFromLoggedIn = jwtUtil.getLoggedInUser();
+
+        Users user = userRepository.findById(userId)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found with ID: " + userId));
+
+        Products product = productRepository.findById(productId)
+                .orElseThrow(() -> new RuntimeException("Product not found with ID: " + productId));
+
+        ProductOrder productOrder = orderRepository.findById(orderId)
+                .orElseThrow(() -> new RuntimeException("Product Order not found with ID: " + orderId));
+
+        OrderLog orderLog = new OrderLog();
+        orderLog.setUser(user);
+        orderLog.setProduct(product);
+        orderLog.setProductOrder(productOrder);
+        orderLog.setDeliveredOn(deliveredOn);
+        orderLog.setProductInventory(productInventory);
+        orderLog.setTotalOrderPrice(totalOrderPrice);
+
+        return orderLogRepository.save(orderLog);
+
+    }
+
+    public ProductOrderDTO createProductOrder(CreateProductOrderDTO orderDTO){
+
+        try {
+            Users user = jwtUtil.getLoggedInUser();
+            Products products = productRepository.findByProductNameIgnoreCase(orderDTO.getProductName()).orElseThrow(() -> new ProductEntityNotFoundException("Product Not Found"));
+            ProductOrder productOrder = mapper.fromCreateProductOrderDTO(orderDTO , user , products);
+
+            ProductOrder currentOrder = orderRepository.save(productOrder);
+
+           createOrderLog(
+                    user.getId(),
+                    products.getId(),
+                    currentOrder.getOrderId(),
+                    mapper.toDate(orderDTO.getDeliveryDate()), // Converts LocalDateTime to Date
+                    products.getProductInventory(),
+                    currentOrder.getOrderPrice()
+            );
+
+            return mapper.toProductOrderDTO(currentOrder);
+        }catch(Exception ex){
+            throw new RuntimeException("Failed to create product order: " + ex.getMessage());
+        }
+    }
+
+    public List<UserInfoDTO> getAllUsers(){
+
+        try {
+            List<Users> users = userRepository.findAll();
+            List<UserInfoDTO> userDTOList = new ArrayList<>();
+            for (Users users1 : users) {
+                userDTOList.add(mapper.toUserInfoDto(users1));
+            }
+            return userDTOList;
+        }catch(Exception ex){
+            throw new UserEntityNotFoundException("Failed to fetch users: " + ex.getMessage());
+        }
+    }
+
+    public List<ProductDTO> getAllProducts(){
+
+        try {
+            List<Products> products = productRepository.findAll();
+            List<ProductDTO> productDTOList = new ArrayList<>();
+
+            for (Products products1 : products) {
+                productDTOList.add(mapper.toProductDTO(products1));
+            }
+            return productDTOList;
+        }catch (Exception ex){
+            throw new ProductEntityNotFoundException("Failed to fetch users: " + ex.getMessage());
+        }
+    }
+
+    public List<ProductOrderDTO> getAllOrders(){
+        try {
+            List<ProductOrder> orders = orderRepository.findAll();
+            List<ProductOrderDTO> orderList = new ArrayList<>();
+
+            for (ProductOrder order : orders) {
+                orderList.add(mapper.toProductOrderDTO(order));
+            }
+            return orderList;
+        }catch(Exception ex){
+            throw new OrderEntityNotFoundException("Failed to fetch orders: " + ex.getMessage());
+        }
+    }
+
+    public List<ProductOrderDTO> getOrdersByProductName(String productName){
+        try {
+            Products products = productRepository.findByProductNameIgnoreCase(productName).orElseThrow(() -> new ProductEntityNotFoundException("Product with uch name doesn't exist"));
+
+            Long productId = products.getId();
+
+                List<ProductOrder> orders = orderRepository.findAllProductOrderByProductId(productId);
+
+                return orders.stream().map(order -> mapper.toProductOrderDTO(order))
+                        .collect(Collectors.toList());
+
+        }catch(Exception ex){
+            throw new OrderEntityNotFoundException("Failed to fetch orders by product name: " + ex.getMessage());
+        }
+    }
+
+    public List<ProductOrderDTO> getOrdersByUserId(Long user_id){
+        try {
+            List<ProductOrder> orders = orderRepository.findByUsers_Id(user_id);
+            if (orders.isEmpty()){
+                throw new OrderWithIdNotFoundException("No orders found for user ID: " + user_id);
+            }
+
+            List<ProductOrderDTO> orderList = new ArrayList<>();
+            for (ProductOrder order : orders) {
+                orderList.add(mapper.toProductOrderDTO(order));
+            }
+            return orderList;
+        }catch (Exception ex){
+            throw new OrderEntityNotFoundException("Failed to fetch orders by user ID: " + ex.getMessage());
+        }
+    }
+
+     public ProductOrderDTO getOrdersByProductNameAndUserId(Long user_id , String productName) {
+        try {
+            ProductOrder orders = orderRepository
+                    .findByUserIdAndProductName(user_id, productName).orElseThrow(() -> new OrderByUserForProductException("Order for Product " +productName+ " made by user with Id " +user_id+ " was not found"));
+
+            if (orders == null) {
+                throw new OrderByUserForProductException("Order not found for user ID: " + user_id + " and product: " + productName);
+            }
+            return mapper.toProductOrderDTO(orders);
+
+        }catch (Exception ex){
+            throw new OrderEntityNotFoundException("Failed to fetch order by product and user ID: " + ex.getMessage());
+        }
+    }
+
+    public ProductDTO updateProduct(UpdateProductDTO productDTO){
+        try {
+            Products products = productRepository.findByProductNameIgnoreCase(productDTO.getProductName()).orElseThrow(() -> new ProductEntityNotFoundException("Product with such name doesn't exist"));
+
+                products.setProductDesc(productDTO.getProductDesc());
+                products.setProductInventory(products.productInventory);
+                products.setPrice(productDTO.getPrice());
+
+                Products updateProduct = productRepository.save(products);
+
+                return mapper.toProductDTO(updateProduct);
+
+        }catch (Exception ex){
+            throw new IncorrectProductNameException("Failed to update product: " + ex.getMessage() );
+        }
+    }
+
+    public ProductOrderDTO updateOrder(UpdateOrderDTO orderDTO){
+        try{
+        Products products = productRepository.findByProductNameIgnoreCase(orderDTO.getProductName()).orElseThrow(() -> new ProductEntityNotFoundException("Product not found"));
+        Users users = userRepository.findByEmail(jwtUtil.getLoggedInUsername()).orElseThrow(() -> new UserEntityNotFoundException("User not found"));
+
+        ProductOrder orders = orderRepository
+                .findByUserIdAndProductName(users.getId() , products.getProductName())
+                .orElseThrow(() -> new OrderByUserForProductException("Product Order For Product : " +products.getProductName()+ "made by User : " +users.getFname() +" " +users.getLname() +" was not found"));
+
+        if (orders != null){
+            throw new OrderByUserForProductException("Order not found for user ID: " + orders.getUsers().getId() + " and product: " + products.getProductName());
+        }
+                  orders.setOrderDate(orderDTO.getOrderDate() != null ? mapper.toLocalDateTime(orderDTO.getOrderDate()) : null);
+                  orders.setEstimateDeliveryDate(orderDTO.getEstimateDeliveryDate() != null ? mapper.toLocalDateTime(orderDTO.getEstimateDeliveryDate()) : null);
+                  orders.setDeliveryDate(orderDTO.getEstimateDeliveryDate() != null ? mapper.toLocalDateTime(orderDTO.getDeliveryDate()) : null);
+                  orders.setOrderQuantity(orderDTO.getOrderQuantity());
+                  orders.setProducts(products);
+                  orders.setUsers(users);
+
+                  ProductOrder updatedOrder = orderRepository.save(orders);
+                  return mapper.toProductOrderDTO(updatedOrder);
+        }catch(Exception ex){
+            throw new OrderNotUpdateException("Failed to update order: " + ex.getMessage());
+        }
+    }
+
+    public void deleteProduct(String productName){
+        try {
+            Products products = productRepository.findByProductNameIgnoreCase(productName).orElseThrow(() -> new RuntimeException("Product not found"));
+
+            productRepository.deleteById(products.getId());
+
+        }catch (Exception ex){
+            throw new OrderEntityNotFoundException("Order not found for deletion");
+        }
+    }
+
+    public void deleteOrder(Long userId , String productName) throws OrderDeletionErrorException {
+        try {
+            ProductOrder productOrder = orderRepository.findByUserIdAndProductName(userId, productName).orElseThrow(() -> new OrderByUserForProductException(""));
+
+            if (productOrder == null){
+                throw new OrderEntityNotFoundException("Order not found for deletion");
+            }
+
+            orderRepository.deleteById(productOrder.getOrderId());
+        }catch (Exception ex){
+            throw new OrderDeletionErrorException("Failed to delete order: " + ex.getMessage());
+        }
+    }
+
+    public List<ProductDTO> gettingProductsInAscendingOrder(){
+
+        try{
+            return productRepository.findAllByOrderByPriceAsc().stream().map(product -> mapper.toProductDTO(product)).toList();
+        }catch (ProductEntityNotFoundException ex){
+            throw new ProductEntityNotFoundException("Product List Not Found");
+        }
+    }
+
+    public List<ProductDTO> gettingProductsInDescendingOrder(){
+
+        try{
+            return productRepository.findAllByOrderByPriceDesc().stream().map(product -> mapper.toProductDTO(product)).toList();
+        }catch (ProductEntityNotFoundException ex){
+            throw new ProductEntityNotFoundException("Product List Not Found");
+        }
+    }
+
+    public List<ProductDTO> getTopOrderedProducts(int topN){
+
+        List<Object[]> results = orderRepository.findTopOrderProducts(PageRequest.of(0 , topN));
+        return results
+                .stream()
+                .map(row -> {
+                    Products product = (Products) row[0];
+                    return mapper.toProductDTO(product);
+                })
+                .collect(Collectors.toList());
+
+    }
+
+    public double getTotalRevenueForProduct(String productName){
+
+        Products product = productRepository.findByProductNameIgnoreCase(productName)
+                .orElseThrow(() -> new ProductEntityNotFoundException("Product Not Found"));
+
+        List<ProductOrder> orders = orderRepository.findAllProductOrderByProductId(product.getId());
+
+        return orders
+                .stream()
+                .mapToDouble(order -> order.getOrderQuantity()*product.getPrice())
+                .sum();
+    }
+
+    // ProductService
+    // Get Inventory Status of All Products
+    public List<ProductInventoryDTO> getInventoryStatus(){
+
+        return productRepository
+                .findAll()
+                .stream()
+                .map(p-> new ProductInventoryDTO(p.getProductName() , p.getProductInventory()))
+                .collect(Collectors.toList());
+
+    }
+
+
+    // OrderService - UserService
+    // Get all logs for a user
+    public List<OrderLogDTO> getOrderLogsByUser(){
+
+        String userName = jwtUtil.getLoggedInUsername();
+        Users users = userRepository.findByEmail(userName).orElseThrow(() -> new UsernameNotFoundException("No User Name found"));
+        List<OrderLog> logs = orderLogRepository.findAllOrderLogByUserId(users.getId());
+
+        if (logs.isEmpty()) {
+            throw new RuntimeException("No order logs found for user ID: " + users.getId());
+        }
+
+        List<OrderLogDTO> logDTOList = new ArrayList<>();
+        for (OrderLog log : logs){
+            logDTOList.add(mapper.toOrderLogDto(log , users , null));
+        }
+        return logDTOList;
+    }
+
+    // Get all order log for a product
+    public List<OrderLogDTO> getOrderLogByProductId(String productName){
+
+        Products product = productRepository.findByProductNameIgnoreCase(productName).orElseThrow(() -> new ProductEntityNotFoundException("Product Entity Not Found"));
+        List<OrderLog> logs = orderLogRepository.findAllOrderLogByProductId(product.getId());
+
+        if (logs.isEmpty()) {
+            throw new RuntimeException("No order logs found for Product ID: " + product.getId());
+        }
+
+        List<OrderLogDTO> logDTOList = new ArrayList<>();
+        for (OrderLog log : logs){
+            logDTOList.add(mapper.toOrderLogDto(log , null , product));
+        }
+        return logDTOList;
+
+    }
+
+    // Getting orderLog By Log Id
+    public OrderLogDTO getOrderLogByOrderId(Long orderId){
+        return orderLogRepository.findOrderLogByOrderId(orderId).map(log -> mapper.toOrderLogDto(log , null , null)).orElseThrow(() -> new RuntimeException("Order Log Not Found"));
+    }
+
+    //Getting orderLog By user and product
+    public OrderLogDTO getOrderLogUserAndProduct(String productName){
+
+        Users users = userRepository.findByEmail(jwtUtil.getLoggedInUsername()).orElseThrow(() -> new UserEntityNotFoundException("User Not Found"));
+        Products products = productRepository.findByProductNameIgnoreCase(productName).orElseThrow(() -> new ProductEntityNotFoundException("No Product Found"));
+        OrderLogDTO logList = orderLogRepository.findByUserIdAndProductOrderId(users.getId() , products.getId()).map(logs -> mapper.toOrderLogDto(logs , users , products)).orElseThrow(() -> new OrderByUserForProductException("Order not found"));
+
+        return logList;
+    }
+
+    // Get all logs sorted by deliveredOn DESC
+    public List<OrderLogDTO> getAllLogsSortedByDeliveryDateDesc(){
+
+        return orderLogRepository.findAllOrderLogsByDeliveredOnDesc().stream().map(logs -> mapper.toOrderLogDto(logs , null , null)).toList();
+
+    }
+
+    // Get all logs between two dates
+    public List<OrderLogDTO> getOrderLogsBetweenDates(Date startDate , Date endDate){
+
+        return orderLogRepository.findAllOrderLogsDeliveredBetween(startDate, endDate).stream().map(logs -> mapper.toOrderLogDto(logs , null , null)).toList();
+
+    }
+}
+
+
+
+/* CONTROLLER */
+1.) AdminController
+@RestController
+@RequestMapping("/api/admin/")
+@CrossOrigin("*")
+public class AdminController {
+
+    @Autowired
+    private AdminService adminService;
+
+    @GetMapping("userBy/{id}")
+    public ResponseEntity<UserInfoDTO> getUserById(@PathVariable Long id) {
+        try {
+            UserInfoDTO user = adminService.getUserById(id);
+            return ResponseEntity.ok(user);
+        } catch (RuntimeException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @GetMapping("searchUser/{name}")
+    public ResponseEntity<UserInfoDTO> getUserByName(@PathVariable(name = "name") String name) {
+        try {
+            UserInfoDTO user = adminService.getUserByName(name);
+            return ResponseEntity.ok(user);
+        } catch (RuntimeException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @GetMapping("orderBy/{id}")
+    public ResponseEntity<OrderInfoDTO> getOrderById(@PathVariable Long id) {
+        try {
+            OrderInfoDTO order = adminService.getProductOrderById(id);
+            return ResponseEntity.ok(order);
+        } catch (RuntimeException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @GetMapping("orderBy/user/{userId}")
+    public ResponseEntity<List<OrderInfoDTO>> getOrderByUserId(@PathVariable(name = "userId") Long id){
+        try {
+            List<OrderInfoDTO> orders = adminService.getProductOrderByUser_Id(id);
+            return ResponseEntity.ok(orders);
+        } catch (RuntimeException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @GetMapping("orderBy/product/{productId}")
+    public ResponseEntity<List<OrderInfoDTO>> getOrdersByProductId(@PathVariable Long productId) {
+        try {
+            List<OrderInfoDTO> orders = adminService.getProductOrderByProduct_Id(productId);
+            return ResponseEntity.ok(orders);
+        } catch (RuntimeException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @GetMapping("products/{id}")
+    public ResponseEntity<ProductDTO> getProductById(@PathVariable Long id) {
+        try {
+            ProductDTO product = adminService.getProductById(id);
+            return ResponseEntity.ok(product);
+        } catch (RuntimeException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @GetMapping("searchProduct")
+    public ResponseEntity<ProductDTO> getProductByName(@RequestParam String name) {
+        try {
+            ProductDTO product = adminService.getProductByName(name);
+            return ResponseEntity.ok(product);
+        } catch (RuntimeException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @PostMapping(value = "product" , consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> createProduct(@ModelAttribute CreateProductDTO productDTO ){
+
+        ProductDTO product = adminService.createProduct(productDTO , productDTO.getImageFile());
+
+        if (product == null){
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(null);
+        }
+        return ResponseEntity.status(HttpStatus.CREATED).body(product);
+    }
+
+    @PostMapping("order")
+    public ResponseEntity<?> createOrder(@RequestBody CreateProductOrderDTO orderDTO){
+        ProductOrderDTO orders = adminService.createProductOrder(orderDTO);
+        if (orders == null){
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+        }else
+            return ResponseEntity.status(HttpStatus.ACCEPTED).body(orders);
+
+    }
+
+    @GetMapping("users")
+    public ResponseEntity<?> getAllUsers(){
+        List<UserInfoDTO> userDTO = adminService.getAllUsers();
+        if (userDTO.isEmpty()){
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("No Users Found");
+        }
+        return ResponseEntity.status(HttpStatus.OK).body(userDTO);
+    }
+
+    @GetMapping("product/all")
+    public ResponseEntity<?> getAllProduct(){
+        List<ProductDTO> productDTO = adminService.getAllProducts();
+        if (productDTO.isEmpty()){
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("No Products Found");
+        }
+        return ResponseEntity.status(HttpStatus.OK).body(productDTO);
+
+    }
+
+    @GetMapping("order/all")
+    public ResponseEntity<?> getAllOrders(){
+        List<ProductOrderDTO> orderDTOList = adminService.getAllOrders();
+        if (orderDTOList.isEmpty()){
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("No Users Found");
+        }
+        return ResponseEntity.status(HttpStatus.OK).body(orderDTOList);
+    }
+
+    @GetMapping("product/all/{name}")
+    public ResponseEntity<?> getAllOrdersByProductName(@PathVariable(name = "name") String productName){
+        List<ProductOrderDTO> orderDTOList = adminService.getOrdersByProductName(productName);
+        if (orderDTOList.isEmpty()){
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("No Products with such name found");
+        }
+        return ResponseEntity.status(HttpStatus.OK).body(orderDTOList);
+    }
+
+    @GetMapping("product/user/all/{Id}")
+    public ResponseEntity<?> getAllOrdersByUserId(@PathVariable(name = "Id") Long userId){
+        List<ProductOrderDTO> orderDTOList = adminService.getOrdersByUserId(userId);
+        if (orderDTOList.isEmpty()){
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("This user has not placed any orders ");
+        }
+        return ResponseEntity.status(HttpStatus.OK).body(orderDTOList);
+    }
+
+    @GetMapping("product/order/all")
+    public ResponseEntity<?> getOrdersByProductNameAndUserId(@RequestParam String productName , @RequestParam Long userId){
+        ProductOrderDTO  order = adminService.getOrdersByProductNameAndUserId(userId,productName);
+        if (order == null){
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("The user has not placed an order for this product");
+        }
+        return ResponseEntity.status(HttpStatus.OK).body(order);
+    }
+
+    @PutMapping("updateProduct")
+    public ResponseEntity<?> updateProduct(@RequestBody UpdateProductDTO productDTO){
+        ProductDTO product = adminService.updateProduct(productDTO);
+        if (product == null){
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("Product not updated");
+        }
+        return ResponseEntity.status(HttpStatus.OK).body(product);
+    }
+
+    @PutMapping("updateOrder")
+    public ResponseEntity<?> updateOrder(@RequestBody UpdateOrderDTO orderDTO){
+        ProductOrderDTO order = adminService.updateOrder(orderDTO);
+        if (order == null){
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("Product not updated");
+        }
+        return ResponseEntity.status(HttpStatus.OK).body(order);
+    }
+
+    @DeleteMapping("delete/product/{productName}")
+    public ResponseEntity<Void> deleteProduct(@PathVariable String productName){
+        adminService.deleteProduct(productName);
+        return ResponseEntity.status(HttpStatus.OK).body(null);
+    }
+
+    @DeleteMapping("delete/order")
+    public ResponseEntity<Void> deleteOrder(@RequestParam Long userId , @RequestParam String productName) throws OrderDeletionErrorException {
+        adminService.deleteOrder(userId, productName);
+        return ResponseEntity.status(HttpStatus.OK).body(null);
+    }
+
+    @GetMapping("/price/asc")
+    public ResponseEntity<List<ProductDTO>> getProductsSortedByPriceAsc() {
+        return ResponseEntity.ok(adminService.gettingProductsInAscendingOrder());
+    }
+
+    @GetMapping("/price/desc")
+    public ResponseEntity<List<ProductDTO>> getProductsSortedByPriceDesc() {
+        return ResponseEntity.ok(adminService.gettingProductsInDescendingOrder());
+    }
+
+    @GetMapping("/top-ordered")
+    public ResponseEntity<List<ProductDTO>> getTopOrderedProducts(@RequestParam("topN") int topN) {
+        return ResponseEntity.ok(adminService.getTopOrderedProducts(topN));
+    }
+
+    @GetMapping("/revenue")
+    public ResponseEntity<Double> getTotalRevenueForProduct(@RequestParam("productName") String productName) {
+        return ResponseEntity.ok(adminService.getTotalRevenueForProduct(productName));
+    }
+
+    @GetMapping("/inventory")
+    public ResponseEntity<List<ProductInventoryDTO>> getInventoryStatus() {
+        return ResponseEntity.ok(adminService.getInventoryStatus());
+    }
+
+    @GetMapping("/logs/user")
+    public ResponseEntity<List<OrderLogDTO>> getOrderLogsByUser() {
+        return ResponseEntity.ok(adminService.getOrderLogsByUser());
+    }
+
+    @GetMapping("/logs/product")
+    public ResponseEntity<List<OrderLogDTO>> getOrderLogsByProduct(@RequestParam("productName") String productName) {
+        return ResponseEntity.ok(adminService.getOrderLogByProductId(productName));
+    }
+
+    @GetMapping("/logs/{orderId}")
+    public ResponseEntity<OrderLogDTO> getOrderLogByOrderId(@PathVariable Long orderId) {
+        return ResponseEntity.ok(adminService.getOrderLogByOrderId(orderId));
+    }
+
+    @GetMapping("/logs/user-product")
+    public ResponseEntity<OrderLogDTO> getOrderLogByUserAndProduct(@RequestParam("productName") String productName) {
+        return ResponseEntity.ok(adminService.getOrderLogUserAndProduct(productName));
+    }
+
+    @GetMapping("/logs/sorted/delivery")
+    public ResponseEntity<List<OrderLogDTO>> getAllLogsSortedByDeliveryDateDesc() {
+        return ResponseEntity.ok(adminService.getAllLogsSortedByDeliveryDateDesc());
+    }
+
+    @GetMapping("/logs/between")
+    public ResponseEntity<List<OrderLogDTO>> getOrderLogsBetweenDates(
+            @RequestParam("startDate") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) Date startDate,
+            @RequestParam("endDate") @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) Date endDate) {
+        return ResponseEntity.ok(adminService.getOrderLogsBetweenDates(startDate, endDate));
+    }
+}
+
+
+/* DTO */
+1.) CreateProductDTO
+@Data
+public class CreateProductDTO {
+    public String productName;
+    public String productDesc;
+    public int productInventory;
+    public double price ;
+    private MultipartFile imageFile;
+}
+
+2.) CreateProductOrderDTO
+@Data
+public class CreateProductOrderDTO {
+    private LocalDateTime estimateDeliveryDate;
+    private LocalDateTime deliveryDate;
+    private String productName;
+    private String orderStatus;
+    private int orderQuantity;
+}
+
+3.) OrderInfoDTO 
+@Data
+public class OrderInfoDTO {
+    private Long orderId;
+    private Date orderDate;
+    private Date estimateDeliveryDate;
+    private Date deliveryDate;
+    private int orderQuantity;
+    private OrderStatus orderStatus;
+    private boolean lateDeliveryStatus;
+    private double orderPrice;
+    private String productName;
+    private String userName;
+}
+
+4.) OrderProductListDTO 
+@Data
+public class OrderProductListDTO {
+    private String productName;
+    private double price;
+    private int productQuantity;
+}
+
+5.) OrderSummaryDTO
+@Data
+public class OrderSummaryDTO {
+    private Long orderId;
+    private LocalDateTime orderDate;
+    private OrderStatus orderStatus;
+    private double totalPrice;
+    private List<OrderProductListDTO> products;
+}
+
+6.) ProductDetailAfterOrderDTO
+@Data
+public class ProductDetailAfterOrderDTO {
+    private Long productId;
+    private String productName;
+    private int productInventoryLeft;
+}
+
+7.) ProductDTO
+@Data
+public class ProductDTO {
+    private Long productId;
+    private  String productName;
+    private  String productDesc;
+    private int productInventory;
+    private double price ;
+    private String imageUrl;
+    private List<Long> productOrderIds;
+}
+
+8.) ProductInventoryDTO
+@Data
+public class ProductInventoryDTO {
+    private String productName;
+    private int inventory;
+}
+
+9.) ProductOrderDTO
+@Data
+public class ProductOrderDTO {
+    private  Long orderId;
+    private Date orderDate;
+    private int orderQuantity;
+    private Date estimateDeliveryDate;
+    private Date deliveryDate;
+    private String userName;
+    private Long userId;
+    private String productName;
+    private Long productId;
+}
+
+10.) UpdateOrderDTO
+@Data
+public class UpdateOrderDTO {
+    private Date orderDate;
+    private Date estimateDeliveryDate;
+    private Date deliveryDate;
+    private int orderQuantity;
+    private String productName;
+}
+
+11.) UpdateProductDTO
+@Data
+public class UpdateProductDTO {
+    private String productName;
+    private String productDesc;
+    private String productInventory;
+    private int price;
+}
+
+12.) UserInfoDTO
+@Data
+public class UserInfoDTO {
+    private String fname;
+    private String lname;
+    private String email;
+    private String phoneNumber;
+    private List<Long> orderIds;
+}
